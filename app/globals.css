@@ -1,0 +1,55 @@
+:root {
+  --bg: oklch(0.12 0.008 85);
+  --surface: oklch(0.18 0.008 85);
+  --line: oklch(0.28 0.008 85);
+  --text: oklch(0.96 0.008 85);
+  --muted: oklch(0.60 0.008 85);
+  --accent: oklch(0.65 0.15 250);
+  --success: oklch(0.70 0.12 155);
+  --danger: oklch(0.65 0.15 25);
+  --radius: 8px;
+  --radius-lg: 12px;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html {
+  height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  height: 100%;
+}
+
+#__next {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+button {
+  font-family: inherit;
+}
+
+input, select {
+  font-family: inherit;
+  font-size: inherit;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
