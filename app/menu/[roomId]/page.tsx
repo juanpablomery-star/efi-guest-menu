@@ -1,11 +1,12 @@
 'use client';
 
 import { useEffect, useState, useMemo, useCallback } from 'react';
-import { useRouter, useParams } from 'next/navigation';
+import { useParams } from 'next/navigation';
 import { db } from '@/lib/firebase';
-import { collection, onSnapshot, addDoc, serverTimestamp, doc, getDoc } from 'firebase/firestore';
+import { collection, onSnapshot, addDoc, serverTimestamp } from 'firebase/firestore';
 import { Product, CartItem } from '@/lib/types';
 import OrderHistory from '@/components/OrderHistory';
+import { useSessionValidation } from '@/lib/hooks/useSessionValidation';
 
 const PAYMENT_METHOD_MAP: Record<string, string> = {
   'Efectivo': 'cash',
@@ -18,10 +19,11 @@ const PAYMENT_METHOD_MAP: Record<string, string> = {
 type PaymentLabel = keyof typeof PAYMENT_METHOD_MAP;
 
 export default function MenuPage() {
-  const router = useRouter();
   const params = useParams();
   const roomId = Array.isArray(params.roomId) ? params.roomId[0] : params.roomId;
   const roomNumber = parseInt(roomId);
+
+  const { authorized, validating, error: authError, logout } = useSessionValidation(roomNumber);
 
   const [products, setProducts] = useState<Product[]>([]);
   const [cart, setCart] = useState<CartItem[]>([]);
@@ -30,8 +32,6 @@ export default function MenuPage() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
   const [activeTab, setActiveTab] = useState<'menu' | 'history'>('menu');
-  const [authorized, setAuthorized] = useState(false);
-  // SSR-safe responsive layout
   const [isMobile, setIsMobile] = useState(false);
 
   useEffect(() => {
@@ -41,70 +41,26 @@ export default function MenuPage() {
     return () => window.removeEventListener('resize', update);
   }, []);
 
-  // Validate room access and guest code
+  // Restore cart from localStorage on mount
   useEffect(() => {
-    const validateRoom = async () => {
-      try {
-        if (isNaN(roomNumber) || roomNumber < 1 || roomNumber > 24) {
-          setError('Habitación inválida');
-          setTimeout(() => router.push('/'), 2000);
-          return;
-        }
+    if (!authorized || isNaN(roomNumber)) return;
+    try {
+      const saved = localStorage.getItem(`cart-${roomNumber}`);
+      if (saved) setCart(JSON.parse(saved) as CartItem[]);
+    } catch { /* storage unavailable */ }
+  }, [authorized, roomNumber]);
 
-        const storedCode = sessionStorage.getItem(`room-${roomNumber}-code`);
-        const storedTimestamp = sessionStorage.getItem(`room-${roomNumber}-timestamp`);
-
-        if (!storedCode || !storedTimestamp) {
-          setError('Acceso denegado. Por favor ingresa desde el inicio');
-          setTimeout(() => router.push('/'), 2000);
-          return;
-        }
-
-        const sessionAge = Date.now() - parseInt(storedTimestamp);
-        if (sessionAge > 4 * 60 * 60 * 1000) {
-          sessionStorage.removeItem(`room-${roomNumber}-code`);
-          sessionStorage.removeItem(`room-${roomNumber}-timestamp`);
-          setError('Sesión expirada. Por favor ingresa nuevamente');
-          setTimeout(() => router.push('/'), 2000);
-          return;
-        }
-
-        const roomRef = doc(db, 'hotels', 'efi-hotel', 'rooms', String(roomNumber));
-        const roomSnap = await getDoc(roomRef);
-
-        if (!roomSnap.exists()) {
-          setError('Habitación no encontrada');
-          setTimeout(() => router.push('/'), 2000);
-          return;
-        }
-
-        const roomData = roomSnap.data();
-        if (roomData?.estado !== 'ocupada') {
-          setError('La habitación no está disponible');
-          setTimeout(() => router.push('/'), 2000);
-          return;
-        }
-
-        const roomGuestCode = String(roomData.guestCode || '').padStart(6, '0');
-        const storedGuestCode = String(storedCode || '').padStart(6, '0');
-
-        if (roomGuestCode !== storedGuestCode) {
-          sessionStorage.removeItem(`room-${roomNumber}-code`);
-          sessionStorage.removeItem(`room-${roomNumber}-timestamp`);
-          setError('Código de huésped inválido');
-          setTimeout(() => router.push('/'), 2000);
-          return;
-        }
-
-        setAuthorized(true);
-      } catch {
-        setError('Error al validar acceso');
-        setTimeout(() => router.push('/'), 2000);
+  // Persist cart to localStorage on change
+  useEffect(() => {
+    if (isNaN(roomNumber)) return;
+    try {
+      if (cart.length > 0) {
+        localStorage.setItem(`cart-${roomNumber}`, JSON.stringify(cart));
+      } else {
+        localStorage.removeItem(`cart-${roomNumber}`);
       }
-    };
-
-    validateRoom();
-  }, [roomNumber, router]);
+    } catch { /* storage unavailable */ }
+  }, [cart, roomNumber]);
 
   // Real-time products via onSnapshot — updates when stock changes
   useEffect(() => {
@@ -192,7 +148,7 @@ export default function MenuPage() {
     setError('');
 
     try {
-      const orderData = {
+      const docRef = await addDoc(collection(db, 'hotels', 'efi-hotel', 'orders'), {
         hotelId: 'efi-hotel',
         roomId: roomNumber,
         items: cart.map(item => ({
@@ -205,37 +161,40 @@ export default function MenuPage() {
         status: 'pending',
         createdAt: serverTimestamp(),
         total,
-      };
+      });
 
-      const docRef = await addDoc(collection(db, 'hotels', 'efi-hotel', 'orders'), orderData);
-      router.push(`/menu/${roomId}/status?orderId=${docRef.id}`);
-    } catch (err: any) {
-      setError(err.message || 'Error al confirmar pedido');
+      // Clear cart after successful order
+      setCart([]);
+      localStorage.removeItem(`cart-${roomNumber}`);
+
+      window.location.href = `/menu/${roomId}/status?orderId=${docRef.id}`;
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Error al confirmar pedido');
       setSubmitting(false);
     }
   };
 
-  const handleLogout = () => {
-    sessionStorage.removeItem(`room-${roomNumber}-code`);
-    sessionStorage.removeItem(`room-${roomNumber}-timestamp`);
-    router.push('/');
-  };
-
-  if (!authorized) {
+  if (validating || !authorized) {
     return (
       <div style={{
         display: 'flex', justifyContent: 'center', alignItems: 'center',
         minHeight: '100vh', padding: '20px', flexDirection: 'column', gap: '16px',
         background: 'var(--bg)',
       }}>
-        <div style={{
-          padding: '20px', background: 'rgba(255, 0, 0, 0.1)',
-          border: '1px solid rgba(255, 0, 0, 0.3)', borderRadius: '8px',
-          color: 'rgba(255, 100, 100, 1)', textAlign: 'center',
-        }}>
-          {error || 'Validando acceso...'}
-        </div>
-        <p style={{ fontSize: '13px', color: 'var(--muted)' }}>Redirigiendo a inicio...</p>
+        {authError ? (
+          <>
+            <div style={{
+              padding: '20px', background: 'rgba(255, 0, 0, 0.1)',
+              border: '1px solid rgba(255, 0, 0, 0.3)', borderRadius: '8px',
+              color: 'rgba(255, 100, 100, 1)', textAlign: 'center',
+            }}>
+              {authError}
+            </div>
+            <p style={{ fontSize: '13px', color: 'var(--muted)' }}>Redirigiendo a inicio...</p>
+          </>
+        ) : (
+          <div style={{ fontSize: '13px', color: 'var(--muted)' }}>Validando acceso...</div>
+        )}
       </div>
     );
   }
@@ -462,7 +421,7 @@ export default function MenuPage() {
 
         <div style={{ marginTop: 'auto', paddingTop: '12px', borderTop: '1px solid var(--line)' }}>
           <button
-            onClick={handleLogout}
+            onClick={logout}
             style={{
               width: '100%', padding: '10px 16px', background: 'transparent',
               color: 'var(--muted)', border: '1px solid var(--line)',

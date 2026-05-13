@@ -1,3 +1,5 @@
+import type { Timestamp } from 'firebase/firestore';
+
 export interface Room {
   numero: number;
   estado: 'libre' | 'ocupada';
@@ -33,6 +35,6 @@ export interface Order {
   }>;
   paymentMethod: 'cash' | 'debit' | 'credit' | 'transfer' | 'mercadopago';
   status: 'pending' | 'accepted' | 'delivered';
-  createdAt: any;
+  createdAt: Timestamp | null;
   total: number;
 }

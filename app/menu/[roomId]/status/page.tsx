@@ -1,10 +1,11 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { useRouter, useParams, useSearchParams } from 'next/navigation';
+import { useParams, useSearchParams } from 'next/navigation';
 import { db } from '@/lib/firebase';
-import { doc, onSnapshot, getDoc } from 'firebase/firestore';
+import { doc, onSnapshot } from 'firebase/firestore';
 import { Order } from '@/lib/types';
+import { useSessionValidation } from '@/lib/hooks/useSessionValidation';
 
 const PAYMENT_LABELS: Record<string, string> = {
   cash: 'Efectivo',
@@ -36,7 +37,6 @@ const STATUS_CONFIG = {
 };
 
 export default function OrderStatusPage() {
-  const router = useRouter();
   const params = useParams();
   const searchParams = useSearchParams();
 
@@ -44,72 +44,18 @@ export default function OrderStatusPage() {
   const roomNumber = parseInt(roomId);
   const orderId = searchParams.get('orderId');
 
+  const { authorized, validating, error: authError, logout } = useSessionValidation(roomNumber);
+
   const [order, setOrder] = useState<Order | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [authorized, setAuthorized] = useState(false);
-
-  // Validate session (same as menu page)
-  useEffect(() => {
-    const validateRoom = async () => {
-      try {
-        if (isNaN(roomNumber) || roomNumber < 1 || roomNumber > 24) {
-          setError('Habitación inválida');
-          setTimeout(() => router.push('/'), 2000);
-          return;
-        }
-
-        const storedCode = sessionStorage.getItem(`room-${roomNumber}-code`);
-        const storedTimestamp = sessionStorage.getItem(`room-${roomNumber}-timestamp`);
-
-        if (!storedCode || !storedTimestamp) {
-          setError('Acceso denegado. Por favor ingresa desde el inicio');
-          setTimeout(() => router.push('/'), 2000);
-          return;
-        }
-
-        const sessionAge = Date.now() - parseInt(storedTimestamp);
-        if (sessionAge > 4 * 60 * 60 * 1000) {
-          sessionStorage.removeItem(`room-${roomNumber}-code`);
-          sessionStorage.removeItem(`room-${roomNumber}-timestamp`);
-          setError('Sesión expirada. Por favor ingresa nuevamente');
-          setTimeout(() => router.push('/'), 2000);
-          return;
-        }
-
-        const roomRef = doc(db, 'hotels', 'efi-hotel', 'rooms', String(roomNumber));
-        const roomSnap = await getDoc(roomRef);
-        const roomData = roomSnap.data();
-
-        if (!roomSnap.exists() || roomData?.estado !== 'ocupada') {
-          setError('La habitación no está disponible');
-          setTimeout(() => router.push('/'), 2000);
-          return;
-        }
-
-        const roomGuestCode = String(roomData.guestCode || '').padStart(6, '0');
-        const storedGuestCode = String(storedCode || '').padStart(6, '0');
-        if (roomGuestCode !== storedGuestCode) {
-          sessionStorage.removeItem(`room-${roomNumber}-code`);
-          setError('Código de huésped inválido');
-          setTimeout(() => router.push('/'), 2000);
-          return;
-        }
-
-        setAuthorized(true);
-      } catch {
-        setError('Error al validar acceso');
-        setTimeout(() => router.push('/'), 2000);
-      }
-    };
-
-    validateRoom();
-  }, [roomNumber, router]);
 
   // Real-time order status
   useEffect(() => {
-    if (!authorized || !orderId) {
-      if (authorized && !orderId) setError('No se encontró el pedido');
+    if (!authorized) return;
+
+    if (!orderId) {
+      setError('No se encontró el pedido');
       setLoading(false);
       return;
     }
@@ -133,27 +79,27 @@ export default function OrderStatusPage() {
     return unsubscribe;
   }, [authorized, orderId]);
 
-  const handleLogout = () => {
-    sessionStorage.removeItem(`room-${roomNumber}-code`);
-    sessionStorage.removeItem(`room-${roomNumber}-timestamp`);
-    router.push('/');
-  };
-
-  if (!authorized) {
+  if (validating || !authorized) {
     return (
       <div style={{
         display: 'flex', justifyContent: 'center', alignItems: 'center',
         minHeight: '100vh', padding: '20px', flexDirection: 'column', gap: '16px',
         background: 'var(--bg)',
       }}>
-        <div style={{
-          padding: '20px', background: 'rgba(255, 0, 0, 0.1)',
-          border: '1px solid rgba(255, 0, 0, 0.3)', borderRadius: '8px',
-          color: 'rgba(255, 100, 100, 1)', textAlign: 'center',
-        }}>
-          {error || 'Validando acceso...'}
-        </div>
-        <p style={{ fontSize: '13px', color: 'var(--muted)' }}>Redirigiendo a inicio...</p>
+        {authError ? (
+          <>
+            <div style={{
+              padding: '20px', background: 'rgba(255, 0, 0, 0.1)',
+              border: '1px solid rgba(255, 0, 0, 0.3)', borderRadius: '8px',
+              color: 'rgba(255, 100, 100, 1)', textAlign: 'center',
+            }}>
+              {authError}
+            </div>
+            <p style={{ fontSize: '13px', color: 'var(--muted)' }}>Redirigiendo a inicio...</p>
+          </>
+        ) : (
+          <div style={{ fontSize: '13px', color: 'var(--muted)' }}>Validando acceso...</div>
+        )}
       </div>
     );
   }
@@ -171,7 +117,7 @@ export default function OrderStatusPage() {
       <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '100vh', flexDirection: 'column', gap: '16px' }}>
         <div style={{ fontSize: '16px', fontWeight: '600', color: 'var(--danger)' }}>{error}</div>
         <button
-          onClick={() => router.push(`/menu/${roomId}`)}
+          onClick={() => window.location.href = `/menu/${roomId}`}
           style={{ padding: '10px 16px', background: 'var(--accent)', color: 'white', border: 'none', borderRadius: 'var(--radius)', cursor: 'pointer', fontSize: '13px' }}
         >
           Volver al menú
@@ -239,12 +185,12 @@ export default function OrderStatusPage() {
             Resumen del pedido
           </div>
 
-          {order?.items && order.items.map((item, i) => (
+          {order?.items?.map((item, i) => (
             <div key={i} style={{
               display: 'flex', justifyContent: 'space-between', fontSize: '13px',
-              marginBottom: i < order.items.length - 1 ? '8px' : '0',
-              paddingBottom: i < order.items.length - 1 ? '8px' : '0',
-              borderBottom: i < order.items.length - 1 ? '1px solid var(--line)' : 'none',
+              marginBottom: i < (order.items.length - 1) ? '8px' : '0',
+              paddingBottom: i < (order.items.length - 1) ? '8px' : '0',
+              borderBottom: i < (order.items.length - 1) ? '1px solid var(--line)' : 'none',
             }}>
               <span>{item.nombre} ×{item.cantidad}</span>
               <span style={{ fontFamily: 'monospace' }}>${(item.precio * item.cantidad).toLocaleString('es-AR')}</span>
@@ -268,7 +214,7 @@ export default function OrderStatusPage() {
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
           <button
-            onClick={() => router.push(`/menu/${roomId}`)}
+            onClick={() => window.location.href = `/menu/${roomId}`}
             style={{
               width: '100%', padding: '12px 16px', background: 'var(--accent)',
               color: 'white', border: 'none', borderRadius: 'var(--radius)',
@@ -279,7 +225,7 @@ export default function OrderStatusPage() {
           </button>
 
           <button
-            onClick={handleLogout}
+            onClick={logout}
             style={{
               width: '100%', padding: '12px 16px', background: 'transparent',
               color: 'var(--muted)', border: '1px solid var(--line)',

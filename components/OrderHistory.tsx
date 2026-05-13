@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { db } from '@/lib/firebase';
 import { collection, query, where, onSnapshot } from 'firebase/firestore';
 import { Order } from '@/lib/types';
+import type { Timestamp } from 'firebase/firestore';
 
 interface OrderHistoryProps {
   roomId: number;
@@ -31,28 +32,24 @@ export default function OrderHistory({ roomId }: OrderHistoryProps) {
       (snap) => {
         const data = snap.docs
           .map(d => ({ id: d.id, ...d.data() } as Order))
-          .sort((a, b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
+          .sort((a, b) => (b.createdAt?.toMillis() ?? 0) - (a.createdAt?.toMillis() ?? 0));
         setOrders(data);
         setTotalSpent(data.reduce((sum, o) => sum + o.total, 0));
         setLoading(false);
       },
-      (error) => {
-        console.error('Error loading order history:', error);
-        setLoading(false);
-      }
+      () => setLoading(false)
     );
 
     return unsubscribe;
   }, [roomId]);
 
-  const formatDate = (timestamp: any) => {
+  const formatDate = (timestamp: Timestamp | null) => {
     if (!timestamp) return 'N/A';
-    const date = timestamp.toDate?.() || new Date(timestamp);
-    return date.toLocaleString('es-AR', {
+    return timestamp.toDate().toLocaleString('es-AR', {
       month: 'short',
       day: 'numeric',
       hour: '2-digit',
-      minute: '2-digit'
+      minute: '2-digit',
     });
   };
 
