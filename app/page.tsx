@@ -73,8 +73,8 @@ export default function LoginPage() {
 
     try {
       const roomNum = parseInt(roomNumber);
-      if (isNaN(roomNum) || roomNum < 1 || roomNum > 24) {
-        setError('Número de habitación inválido (1–24)');
+      if (isNaN(roomNum) || roomNum < 1 || roomNum > 24 || roomNum === 13) {
+        setError('Número de habitación inválido');
         setLoading(false);
         return;
       }

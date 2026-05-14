@@ -14,7 +14,7 @@ export function useSessionValidation(roomNumber: number) {
   const [error, setError] = useState('');
 
   useEffect(() => {
-    if (isNaN(roomNumber) || roomNumber < 1 || roomNumber > 24) {
+    if (isNaN(roomNumber) || roomNumber < 1 || roomNumber > 24 || roomNumber === 13) {
       setError('Habitación inválida');
       setValidating(false);
       setTimeout(() => router.push('/'), 2000);

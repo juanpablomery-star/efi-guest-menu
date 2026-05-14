@@ -23,6 +23,11 @@ export interface CartItem {
   cantidad: number;
 }
 
+export interface PaymentSplit {
+  metodoPago: string;
+  monto: number;
+}
+
 export interface Order {
   id: string;
   hotelId: string;
@@ -33,8 +38,11 @@ export interface Order {
     cantidad: number;
     precio: number;
   }>;
-  paymentMethod: 'cash' | 'debit' | 'credit' | 'transfer' | 'mercadopago';
-  status: 'pending' | 'accepted' | 'delivered';
+  paymentMethod: string;
+  paymentSplits?: PaymentSplit[];
+  status: 'pending' | 'accepted' | 'delivered' | 'cancelled';
+  source?: 'reception' | 'qr';
+  editado?: boolean;
   createdAt: Timestamp | null;
   total: number;
 }
