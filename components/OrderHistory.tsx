@@ -11,9 +11,10 @@ interface OrderHistoryProps {
 }
 
 const STATUS_CONFIG = {
-  pending: { label: '⏳ Pendiente', color: '#FFA500', bgColor: 'rgba(255, 165, 0, 0.1)' },
-  accepted: { label: '✅ Aceptado', color: '#3B82F6', bgColor: 'rgba(59, 130, 246, 0.1)' },
+  pending:   { label: '⏳ Pendiente',  color: '#FFA500', bgColor: 'rgba(255, 165, 0, 0.1)' },
+  accepted:  { label: '✅ Aceptado',   color: '#3B82F6', bgColor: 'rgba(59, 130, 246, 0.1)' },
   delivered: { label: '✔️ Entregado', color: '#10B981', bgColor: 'rgba(16, 185, 129, 0.1)' },
+  cancelled: { label: '❌ Cancelado',  color: '#EF4444', bgColor: 'rgba(239, 68, 68, 0.1)' },
 };
 
 export default function OrderHistory({ roomId }: OrderHistoryProps) {
@@ -74,8 +75,8 @@ export default function OrderHistory({ roomId }: OrderHistoryProps) {
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
         {orders.map(order => {
-          const status = order.status as 'pending' | 'accepted' | 'delivered';
-          const statusInfo = STATUS_CONFIG[status];
+          const status = order.status as keyof typeof STATUS_CONFIG;
+          const statusInfo = STATUS_CONFIG[status] ?? STATUS_CONFIG.pending;
 
           return (
             <div
