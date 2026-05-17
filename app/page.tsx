@@ -103,6 +103,7 @@ export default function LoginPage() {
       }
 
       if (roomData.estado !== 'ocupada') {
+        recordFailedAttempt();
         setError('La habitación no está ocupada');
         setLoading(false);
         return;
@@ -127,8 +128,8 @@ export default function LoginPage() {
       sessionStorage.setItem(`room-${roomNum}-code`, guestCode);
       sessionStorage.setItem(`room-${roomNum}-timestamp`, Date.now().toString());
       router.push(`/menu/${roomNum}`);
-    } catch (err: any) {
-      setError(err.message || 'Error al validar');
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Error al validar');
       setLoading(false);
     }
   };

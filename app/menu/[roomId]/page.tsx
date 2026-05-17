@@ -7,7 +7,7 @@ import { collection, query, where, onSnapshot, addDoc, serverTimestamp } from 'f
 import { Product, CartItem, Order, PaymentSplit } from '@/lib/types';
 import { useSessionValidation } from '@/lib/hooks/useSessionValidation';
 
-const PAYMENT_METHODS = ['Efectivo', 'Tarjeta débito', 'Tarjeta crédito', 'Transferencia', 'MercadoPago'] as const;
+const PAYMENT_METHODS = ['Efectivo', 'Tarjeta débito', 'Tarjeta crédito', 'Transferencia', 'MercadoPago', 'Motel Now'] as const;
 type PaymentMethod = typeof PAYMENT_METHODS[number];
 
 const METHOD_TO_KEY: Record<PaymentMethod, string> = {
@@ -16,6 +16,7 @@ const METHOD_TO_KEY: Record<PaymentMethod, string> = {
   'Tarjeta crédito': 'credit',
   'Transferencia': 'transfer',
   'MercadoPago': 'mercadopago',
+  'Motel Now': 'motelnow',
 };
 
 const KEY_TO_LABEL: Record<string, string> = {
@@ -24,6 +25,7 @@ const KEY_TO_LABEL: Record<string, string> = {
   credit: 'Tarjeta crédito',
   transfer: 'Transferencia',
   mercadopago: 'MercadoPago',
+  motelnow: 'Motel Now',
 };
 
 const STATUS_CFG = {
@@ -84,6 +86,11 @@ function OrderCard({ order }: { order: Order }) {
               Registrado por recepción
             </span>
           )}
+          {isCancelled && order.cancellationReason && (
+            <span style={{ fontSize: 10, color: '#EF4444', background: 'rgba(239,68,68,0.1)', padding: '2px 6px', borderRadius: 4, alignSelf: 'flex-start', marginTop: 4 }}>
+              {order.cancellationReason}
+            </span>
+          )}
         </div>
         <span style={{ fontFamily: 'monospace', fontSize: 13, fontWeight: 700, textDecoration: isCancelled ? 'line-through' : 'none', color: isCancelled ? 'var(--muted)' : 'var(--text)' }}>
           ${order.total.toLocaleString('es-AR')}
@@ -119,7 +126,7 @@ export default function MenuPage() {
   const roomId = Array.isArray(params.roomId) ? params.roomId[0] : params.roomId;
   const roomNumber = parseInt(roomId);
 
-  const { authorized, validating, error: authError, logout } = useSessionValidation(roomNumber);
+  const { authorized, validating, error: authError, roomClosed, validateRoomStatus, logout } = useSessionValidation(roomNumber);
 
   const [products, setProducts] = useState<Product[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
@@ -135,9 +142,16 @@ export default function MenuPage() {
   const [splits, setSplits] = useState<PaymentSplit[]>([{ metodoPago: '', monto: 0 }]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
+  const [sidebarOpen, setSidebarOpen] = useState(!isMobile);
+  const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
 
   useEffect(() => {
-    const update = () => setIsMobile(window.innerWidth < 640);
+    const update = () => {
+      const mobile = window.innerWidth < 640;
+      setIsMobile(mobile);
+      setSidebarOpen(!mobile);
+    };
     update();
     window.addEventListener('resize', update);
     return () => window.removeEventListener('resize', update);
@@ -171,7 +185,12 @@ export default function MenuPage() {
       collection(db, 'hotels', 'efi-hotel', 'products'),
       (snap) => {
         const all = snap.docs.map(d => ({ id: d.id, ...d.data() } as Product));
-        setProducts(all.filter(p => !p.deleted && p.subcategoria !== 'cortesia' && p.stock > 0));
+        setProducts(all.filter(p =>
+          !p.deleted
+          && p.subcategoria !== 'cortesia'
+          && p.precio > 0
+          && p.stock > 0
+        ));
         setProductsLoading(false);
       },
       () => setProductsLoading(false)
@@ -195,10 +214,29 @@ export default function MenuPage() {
   }, [authorized, roomNumber]);
 
   const groupedProducts = useMemo(() => {
-    const g: Record<string, Product[]> = { Bebida: [], Comida: [], Otro: [] };
-    products.forEach(p => { if (g[p.categoria]) g[p.categoria].push(p); });
+    const g: Record<string, Product[]> = {};
+    products.forEach(p => {
+      if (!g[p.categoria]) g[p.categoria] = [];
+      g[p.categoria].push(p);
+    });
     return g;
   }, [products]);
+
+  const filteredProducts = useMemo(() => {
+    let result = selectedCategory ? { [selectedCategory]: groupedProducts[selectedCategory] || [] } : groupedProducts;
+
+    if (!searchQuery.trim()) return result;
+
+    const query = searchQuery.toLowerCase();
+    const filtered: Record<string, Product[]> = {};
+
+    Object.entries(result).forEach(([cat, items]) => {
+      const matches = items.filter(p => p.nombre.toLowerCase().includes(query));
+      if (matches.length > 0) filtered[cat] = matches;
+    });
+
+    return filtered;
+  }, [groupedProducts, selectedCategory, searchQuery]);
 
   const cartTotal = useMemo(() => cart.reduce((s, i) => s + i.precio * i.cantidad, 0), [cart]);
   const cartCount = cart.reduce((s, i) => s + i.cantidad, 0);
@@ -256,11 +294,19 @@ export default function MenuPage() {
     setError('');
 
     try {
+      // Validate room status before confirming order
+      const statusValidation = await validateRoomStatus();
+      if (!statusValidation.valid) {
+        setError(statusValidation.message);
+        setSubmitting(false);
+        return;
+      }
       const orderData: Record<string, unknown> = {
         hotelId: 'efi-hotel',
         roomId: roomNumber,
         items: cart.map(i => ({ productId: i.productId, nombre: i.nombre, cantidad: i.cantidad, precio: i.precio })),
         status: 'pending',
+        source: 'qr',
         createdAt: serverTimestamp(),
         total: cartTotal,
       };
@@ -460,13 +506,112 @@ export default function MenuPage() {
         </div>
 
         {/* Body */}
-        <div style={{ flex: 1, display: 'flex', flexDirection: isMobile ? 'column' : 'row', overflow: isMobile ? 'auto' : 'hidden' }}>
+        <div style={{ flex: 1, display: 'flex', flexDirection: isMobile ? 'column' : 'row', overflow: isMobile ? 'auto' : 'hidden', position: 'relative' }}>
+          {/* Hamburger button - only on mobile */}
+          {isMobile && (
+            <button
+              onClick={() => setSidebarOpen(!sidebarOpen)}
+              style={{
+                position: 'absolute', top: 4, left: 4, zIndex: 100,
+                background: 'none', border: 'none', color: 'var(--text)',
+                cursor: 'pointer', fontSize: 22, padding: '8px', lineHeight: 1,
+              }}
+            >☰</button>
+          )}
+
+          {/* Sidebar with categories */}
+          {(sidebarOpen || !isMobile) && (
+            <div style={{
+              position: isMobile ? 'absolute' : 'relative',
+              top: 0, left: 0, zIndex: 99,
+              width: isMobile ? 220 : 200,
+              flexShrink: 0,
+              background: 'var(--surface)',
+              borderRight: isMobile ? 'none' : '1px solid var(--line)',
+              borderBottom: isMobile ? '1px solid var(--line)' : 'none',
+              display: 'flex', flexDirection: 'column',
+              overflowY: 'auto',
+              maxHeight: isMobile ? 'calc(100vh - 150px)' : '100%',
+            }}>
+              <div style={{ padding: '12px 14px', fontSize: 12, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: '1px solid var(--line)' }}>
+                Categorías
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column' }}>
+                <button
+                  onClick={() => {
+                    setSelectedCategory(null);
+                    if (isMobile) setSidebarOpen(false);
+                  }}
+                  style={{
+                    padding: '10px 14px', background: selectedCategory === null ? 'var(--accent)' : 'transparent',
+                    color: selectedCategory === null ? 'white' : 'var(--text)',
+                    border: 'none', textAlign: 'left', cursor: 'pointer',
+                    fontSize: 13, fontWeight: selectedCategory === null ? 600 : 500,
+                    borderBottom: '1px solid var(--line)',
+                  }}
+                >
+                  Todo {products.length > 0 && <span style={{ fontSize: 11, color: 'var(--muted)', marginLeft: 6 }}>({products.length})</span>}
+                </button>
+                {Object.keys(groupedProducts).map(cat => (
+                  <button
+                    key={cat}
+                    onClick={() => {
+                      setSelectedCategory(cat);
+                      if (isMobile) setSidebarOpen(false);
+                    }}
+                    style={{
+                      padding: '10px 14px', background: selectedCategory === cat ? 'var(--accent)' : 'transparent',
+                      color: selectedCategory === cat ? 'white' : 'var(--text)',
+                      border: 'none', textAlign: 'left', cursor: 'pointer',
+                      fontSize: 13, fontWeight: selectedCategory === cat ? 600 : 500,
+                      borderBottom: '1px solid var(--line)',
+                    }}
+                  >
+                    {cat} <span style={{ fontSize: 11, color: selectedCategory === cat ? 'rgba(255,255,255,0.7)' : 'var(--muted)', marginLeft: 6 }}>({groupedProducts[cat]?.length || 0})</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Overlay backdrop on mobile when sidebar is open */}
+          {isMobile && sidebarOpen && (
+            <div
+              onClick={() => setSidebarOpen(false)}
+              style={{
+                position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+                background: 'rgba(0,0,0,0.3)', zIndex: 98,
+              }}
+            />
+          )}
+
           {/* Product catalog */}
-          <div style={{ flex: 1, overflowY: isMobile ? 'visible' : 'auto', padding: 16 }}>
+          <div style={{ flex: 1, overflowY: isMobile ? 'visible' : 'auto', padding: 16, paddingTop: isMobile ? 50 : 16, display: 'flex', flexDirection: 'column' }}>
+            {/* Search bar */}
+            <div style={{ marginBottom: 16, position: 'relative' }}>
+              <div style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: 'var(--muted)', fontSize: 16 }}>🔍</div>
+              <input
+                type="text"
+                placeholder="Buscar productos..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                style={{
+                  width: '100%', padding: '10px 12px 10px 40px',
+                  border: '1px solid var(--line)', borderRadius: 'var(--radius)',
+                  background: 'var(--surface)', color: 'var(--text)',
+                  fontSize: 13, outline: 'none',
+                }}
+              />
+            </div>
+
             {productsLoading ? (
               <div style={{ color: 'var(--muted)', fontSize: 13 }}>Cargando productos...</div>
+            ) : Object.keys(filteredProducts).length === 0 ? (
+              <div style={{ color: 'var(--muted)', fontSize: 13, textAlign: 'center', paddingTop: 20 }}>
+                {searchQuery ? 'No hay productos que coincidan con tu búsqueda' : 'No hay productos disponibles'}
+              </div>
             ) : (
-              Object.entries(groupedProducts).map(([cat, items]) =>
+              Object.entries(filteredProducts).map(([cat, items]) =>
                 items.length > 0 && (
                   <div key={cat} style={{ marginBottom: 24 }}>
                     <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', color: 'var(--muted)', marginBottom: 10, letterSpacing: '0.06em' }}>{cat}</div>

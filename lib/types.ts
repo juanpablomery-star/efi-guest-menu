@@ -45,4 +45,6 @@ export interface Order {
   editado?: boolean;
   createdAt: Timestamp | null;
   total: number;
+  cancellationReason?: string;
+  cancelledAt?: string;
 }
