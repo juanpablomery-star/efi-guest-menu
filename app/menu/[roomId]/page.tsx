@@ -3,7 +3,7 @@
 import { useEffect, useState, useMemo, useCallback } from 'react';
 import { useParams } from 'next/navigation';
 import { db } from '@/lib/firebase';
-import { collection, query, where, onSnapshot, addDoc, serverTimestamp } from 'firebase/firestore';
+import { collection, query, where, onSnapshot, addDoc, serverTimestamp, writeBatch, doc, increment } from 'firebase/firestore';
 import { Product, CartItem, Order, PaymentSplit } from '@/lib/types';
 import { useSessionValidation } from '@/lib/hooks/useSessionValidation';
 
@@ -34,6 +34,8 @@ const STATUS_CFG = {
   delivered: { label: 'Entregado',      color: '#10B981', bg: 'rgba(16,185,129,0.08)', border: 'rgba(16,185,129,0.3)' },
   cancelled: { label: 'Anulado',        color: '#6B7280', bg: 'rgba(107,114,128,0.06)', border: 'rgba(107,114,128,0.2)' },
 };
+
+const fmtLabel = (s: string) => s.replace(/_/g, ' ');
 
 function formatDate(ts: Order['createdAt']) {
   if (!ts) return '';
@@ -144,6 +146,7 @@ export default function MenuPage() {
   const [error, setError] = useState('');
   const [sidebarOpen, setSidebarOpen] = useState(!isMobile);
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
+  const [selectedSubcategory, setSelectedSubcategory] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
 
   useEffect(() => {
@@ -187,7 +190,7 @@ export default function MenuPage() {
         const all = snap.docs.map(d => ({ id: d.id, ...d.data() } as Product));
         setProducts(all.filter(p =>
           !p.deleted
-          && p.subcategoria !== 'cortesia'
+          && p.categoria !== 'Cortesía'
           && p.precio > 0
           && p.stock > 0
         ));
@@ -222,21 +225,41 @@ export default function MenuPage() {
     return g;
   }, [products]);
 
-  const filteredProducts = useMemo(() => {
-    let result = selectedCategory ? { [selectedCategory]: groupedProducts[selectedCategory] || [] } : groupedProducts;
-
-    if (!searchQuery.trim()) return result;
-
-    const query = searchQuery.toLowerCase();
-    const filtered: Record<string, Product[]> = {};
-
-    Object.entries(result).forEach(([cat, items]) => {
-      const matches = items.filter(p => p.nombre.toLowerCase().includes(query));
-      if (matches.length > 0) filtered[cat] = matches;
+  const groupedSubcategories = useMemo(() => {
+    const g: Record<string, string[]> = {};
+    products.forEach(p => {
+      if (!g[p.categoria]) g[p.categoria] = [];
+      if (p.subcategoria && !g[p.categoria].includes(p.subcategoria)) {
+        g[p.categoria].push(p.subcategoria);
+      }
     });
+    return g;
+  }, [products]);
 
-    return filtered;
-  }, [groupedProducts, selectedCategory, searchQuery]);
+  const filteredProducts = useMemo(() => {
+    const result: Record<string, Product[]> = {};
+    const q = searchQuery.trim().toLowerCase();
+
+    if (!selectedCategory) {
+      products.forEach(p => {
+        if (q && !p.nombre.toLowerCase().includes(q)) return;
+        if (!result[p.categoria]) result[p.categoria] = [];
+        result[p.categoria].push(p);
+      });
+      return result;
+    }
+
+    const base = (groupedProducts[selectedCategory] || []).filter(p =>
+      (!selectedSubcategory || p.subcategoria === selectedSubcategory) &&
+      (!q || p.nombre.toLowerCase().includes(q))
+    );
+    base.forEach(p => {
+      const key = p.subcategoria || selectedCategory;
+      if (!result[key]) result[key] = [];
+      result[key].push(p);
+    });
+    return result;
+  }, [products, groupedProducts, selectedCategory, selectedSubcategory, searchQuery]);
 
   const cartTotal = useMemo(() => cart.reduce((s, i) => s + i.precio * i.cantidad, 0), [cart]);
   const cartCount = cart.reduce((s, i) => s + i.cantidad, 0);
@@ -318,7 +341,14 @@ export default function MenuPage() {
         orderData.paymentMethod = METHOD_TO_KEY[paymentMethod];
       }
 
-      await addDoc(collection(db, 'hotels', 'efi-hotel', 'orders'), orderData);
+      const batch = writeBatch(db);
+      const orderRef = doc(collection(db, 'hotels', 'efi-hotel', 'orders'));
+      batch.set(orderRef, orderData);
+      for (const item of cart) {
+        const productRef = doc(db, 'hotels', 'efi-hotel', 'products', item.productId);
+        batch.update(productRef, { stock: increment(-item.cantidad) });
+      }
+      await batch.commit();
 
       setCart([]);
       localStorage.removeItem(`cart-${roomNumber}`);
@@ -519,7 +549,7 @@ export default function MenuPage() {
             >☰</button>
           )}
 
-          {/* Sidebar with categories */}
+          {/* Sidebar — two-level navigation */}
           {(sidebarOpen || !isMobile) && (
             <div style={{
               position: isMobile ? 'absolute' : 'relative',
@@ -533,44 +563,117 @@ export default function MenuPage() {
               overflowY: 'auto',
               maxHeight: isMobile ? 'calc(100vh - 150px)' : '100%',
             }}>
-              <div style={{ padding: '12px 14px', fontSize: 12, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: '1px solid var(--line)' }}>
-                Categorías
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column' }}>
-                <button
-                  onClick={() => {
-                    setSelectedCategory(null);
-                    if (isMobile) setSidebarOpen(false);
-                  }}
-                  style={{
-                    padding: '10px 14px', background: selectedCategory === null ? 'var(--accent)' : 'transparent',
-                    color: selectedCategory === null ? 'white' : 'var(--text)',
-                    border: 'none', textAlign: 'left', cursor: 'pointer',
-                    fontSize: 13, fontWeight: selectedCategory === null ? 600 : 500,
-                    borderBottom: '1px solid var(--line)',
-                  }}
-                >
-                  Todo {products.length > 0 && <span style={{ fontSize: 11, color: 'var(--muted)', marginLeft: 6 }}>({products.length})</span>}
-                </button>
-                {Object.keys(groupedProducts).map(cat => (
+              {selectedCategory ? (
+                <>
+                  {/* Back to categories */}
                   <button
-                    key={cat}
-                    onClick={() => {
-                      setSelectedCategory(cat);
-                      if (isMobile) setSidebarOpen(false);
-                    }}
+                    onClick={() => { setSelectedCategory(null); setSelectedSubcategory(null); }}
                     style={{
-                      padding: '10px 14px', background: selectedCategory === cat ? 'var(--accent)' : 'transparent',
-                      color: selectedCategory === cat ? 'white' : 'var(--text)',
-                      border: 'none', textAlign: 'left', cursor: 'pointer',
-                      fontSize: 13, fontWeight: selectedCategory === cat ? 600 : 500,
-                      borderBottom: '1px solid var(--line)',
+                      padding: '11px 14px', background: 'transparent', border: 'none',
+                      borderBottom: '1px solid var(--line)', textAlign: 'left', cursor: 'pointer',
+                      fontSize: 12, color: 'var(--muted)', display: 'flex', alignItems: 'center', gap: 6,
+                      flexShrink: 0,
                     }}
                   >
-                    {cat} <span style={{ fontSize: 11, color: selectedCategory === cat ? 'rgba(255,255,255,0.7)' : 'var(--muted)', marginLeft: 6 }}>({groupedProducts[cat]?.length || 0})</span>
+                    ← Categorías
                   </button>
-                ))}
-              </div>
+                  {/* Category header */}
+                  <div style={{
+                    padding: '10px 14px', fontSize: 11, fontWeight: 800,
+                    textTransform: 'uppercase', letterSpacing: '0.08em',
+                    color: 'var(--accent)', borderBottom: '1px solid var(--line)',
+                    background: 'rgba(255,255,255,0.03)', flexShrink: 0,
+                  }}>
+                    {selectedCategory}
+                  </div>
+                  {/* All in category */}
+                  <button
+                    onClick={() => { setSelectedSubcategory(null); if (isMobile) setSidebarOpen(false); }}
+                    style={{
+                      padding: '11px 14px', background: !selectedSubcategory ? 'var(--accent)' : 'transparent',
+                      color: !selectedSubcategory ? 'white' : 'var(--text)',
+                      border: 'none', borderBottom: '1px solid var(--line)',
+                      textAlign: 'left', cursor: 'pointer',
+                      fontSize: 13, fontWeight: !selectedSubcategory ? 700 : 400,
+                      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                    }}
+                  >
+                    <span>Todo</span>
+                    <span style={{ fontSize: 11, color: !selectedSubcategory ? 'rgba(255,255,255,0.55)' : 'var(--muted)' }}>
+                      {groupedProducts[selectedCategory]?.length || 0}
+                    </span>
+                  </button>
+                  {/* Subcategories */}
+                  {(groupedSubcategories[selectedCategory] || []).map((sub, i) => {
+                    const count = (groupedProducts[selectedCategory] || []).filter(p => p.subcategoria === sub).length;
+                    const active = selectedSubcategory === sub;
+                    return (
+                      <button
+                        key={sub}
+                        onClick={() => { setSelectedSubcategory(sub); if (isMobile) setSidebarOpen(false); }}
+                        style={{
+                          padding: '11px 14px', background: active ? 'var(--accent)' : 'transparent',
+                          color: active ? 'white' : 'var(--text)',
+                          border: 'none', borderBottom: '1px solid var(--line)',
+                          textAlign: 'left', cursor: 'pointer',
+                          display: 'flex', alignItems: 'center', gap: 8,
+                        }}
+                      >
+                        <span style={{ fontSize: 10, fontFamily: 'monospace', flexShrink: 0, color: active ? 'rgba(255,255,255,0.45)' : 'var(--muted)' }}>
+                          {String(i + 1).padStart(2, '0')}
+                        </span>
+                        <span style={{ flex: 1, fontSize: 12, fontWeight: active ? 700 : 400, textTransform: 'uppercase', letterSpacing: '0.03em' }}>
+                          {fmtLabel(sub)}
+                        </span>
+                        <span style={{ fontSize: 10, color: active ? 'rgba(255,255,255,0.45)' : 'var(--muted)' }}>
+                          {count}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </>
+              ) : (
+                <>
+                  <div style={{ padding: '12px 14px', fontSize: 11, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.06em', borderBottom: '1px solid var(--line)', flexShrink: 0 }}>
+                    Menú
+                  </div>
+                  {/* All products */}
+                  <button
+                    onClick={() => { if (isMobile) setSidebarOpen(false); }}
+                    style={{
+                      padding: '11px 14px', background: 'var(--accent)',
+                      color: 'white', border: 'none', borderBottom: '1px solid var(--line)',
+                      textAlign: 'left', cursor: 'pointer',
+                      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                      fontSize: 13, fontWeight: 700,
+                    }}
+                  >
+                    <span>Todo</span>
+                    <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.55)' }}>{products.length}</span>
+                  </button>
+                  {/* Category list */}
+                  {Object.keys(groupedProducts).map((cat, i) => (
+                    <button
+                      key={cat}
+                      onClick={() => { setSelectedCategory(cat); setSelectedSubcategory(null); }}
+                      style={{
+                        padding: '11px 14px', background: 'transparent', color: 'var(--text)',
+                        border: 'none', borderBottom: '1px solid var(--line)',
+                        textAlign: 'left', cursor: 'pointer',
+                        display: 'flex', alignItems: 'center', gap: 8,
+                      }}
+                    >
+                      <span style={{ fontSize: 10, fontFamily: 'monospace', flexShrink: 0, color: 'var(--muted)' }}>
+                        {String(i + 1).padStart(2, '0')}
+                      </span>
+                      <span style={{ flex: 1, fontSize: 12, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.03em' }}>
+                        {cat}
+                      </span>
+                      <span style={{ fontSize: 13, color: 'var(--muted)' }}>›</span>
+                    </button>
+                  ))}
+                </>
+              )}
             </div>
           )}
 
@@ -614,7 +717,7 @@ export default function MenuPage() {
               Object.entries(filteredProducts).map(([cat, items]) =>
                 items.length > 0 && (
                   <div key={cat} style={{ marginBottom: 24 }}>
-                    <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', color: 'var(--muted)', marginBottom: 10, letterSpacing: '0.06em' }}>{cat}</div>
+                    <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', color: 'var(--muted)', marginBottom: 10, letterSpacing: '0.06em' }}>{fmtLabel(cat)}</div>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                       {items.map(product => {
                         const qty = cart.find(i => i.productId === product.id)?.cantidad || 0;

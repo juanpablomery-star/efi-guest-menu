@@ -35,7 +35,14 @@ export function useSessionValidation(roomNumber: number) {
         return;
       }
 
-      const sessionAge = Date.now() - parseInt(storedTimestamp);
+      const parsedTimestamp = parseInt(storedTimestamp);
+      if (isNaN(parsedTimestamp)) {
+        setError('Sesión inválida. Por favor ingresa de nuevo');
+        setValidating(false);
+        setTimeout(() => router.push('/'), 2000);
+        return;
+      }
+      const sessionAge = Date.now() - parsedTimestamp;
       if (sessionAge > SESSION_TIMEOUT_MS) {
         sessionStorage.removeItem(`room-${roomNumber}-code`);
         sessionStorage.removeItem(`room-${roomNumber}-timestamp`);
